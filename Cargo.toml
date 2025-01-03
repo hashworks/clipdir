@@ -1,0 +1,11 @@
+[package]
+name = "clipdir"
+description = "Clipboard manager with directory backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+chrono = "0.4.39"
+clap = { version = "4.5.23", features = ["cargo", "env", "string"] }
+infer = "0.16.0"

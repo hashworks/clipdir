@@ -1,0 +1,6 @@
+debug/
+target/
+# No Cargo.lock for executables
+Cargo.lock
+# rustfmt
+**/*.rs.bk
