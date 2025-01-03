@@ -1,13 +1,37 @@
 use anyhow::anyhow;
 use chrono::Utc;
 use clap::{crate_description, crate_name, crate_version, Arg, ArgMatches, Command};
+use common::extract_required_arg_value;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::fs::{self};
 use std::io::{self, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::{env, str};
 
 mod common;
+
+// See man wl-clipboard
+#[derive(Clone)]
+enum ClipboardState {
+    Nil,
+    Sensitive,
+    Clear,
+    Data,
+    Unknown,
+}
+
+impl ClipboardState {
+    fn from_str(v: &str) -> Result<ClipboardState, String> {
+        match v.to_lowercase().as_str() {
+            "nil" => Ok(ClipboardState::Nil),
+            "sensitive" => Ok(ClipboardState::Sensitive),
+            "clear" => Ok(ClipboardState::Clear),
+            "data" => Ok(ClipboardState::Data),
+            _ => Ok(ClipboardState::Unknown),
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     let matches = Command::new(crate_name!())
@@ -20,24 +44,37 @@ fn main() -> anyhow::Result<()> {
                 .long("storage-path")
                 .global(true)
                 .env("CLIPDIR_STORAGE_PATH")
-                .default_value(common::data_dir().to_string_lossy().to_string()),
+                .value_parser(clap::value_parser!(PathBuf))
+                .default_value(
+                    common::data_dir(crate_name!())
+                        .to_string_lossy()
+                        .to_string(),
+                ),
         )
         .subcommand(
             Command::new("store")
                 .short_flag('s')
                 .long_flag("store")
                 .about("Store a clipboard entry by stdin")
-                .arg(Arg::new("state").long("state").env("CLIPBOARD_STATE"))
                 .arg(
-                    Arg::new("size-limit")
-                        .long("size-limit")
-                        .env("CLIPDIR_SIZE_LIMIT")
+                    Arg::new("state")
+                        .long("state")
+                        .env("CLIPBOARD_STATE")
+                        .value_parser(ClipboardState::from_str)
+                        .default_value("data"),
+                )
+                .arg(
+                    Arg::new("byte-limit")
+                        .long("byte-limit")
+                        .env("CLIPDIR_BYTE_LIMIT")
+                        .value_parser(clap::value_parser!(usize))
                         .default_value("5242880"),
                 )
                 .arg(
                     Arg::new("dedupe-search-limit")
                         .long("dedupe-search-limit")
                         .env("CLIPDIR_DEDUPE_SEARCH_LIMIT")
+                        .value_parser(clap::value_parser!(usize))
                         .default_value("1000"),
                 ),
         )
@@ -49,6 +86,7 @@ fn main() -> anyhow::Result<()> {
                     Arg::new("preview-length")
                         .long("preview-length")
                         .env("CLIPDIR_PREVIEW_LENGTH")
+                        .value_parser(clap::value_parser!(usize))
                         .default_value("100"),
                 )
                 .about("List clipboard entries prefixed with their id"),
@@ -63,16 +101,10 @@ fn main() -> anyhow::Result<()> {
 
     match matches.subcommand() {
         Some(("store", arg_matches)) => {
-            // See man wl-clipboard
-            match arg_matches
-                .try_get_one::<String>("state")
-                .map_err(|e| anyhow!("Failed to get value of argument 'state': {}", e))?
-                .unwrap_or(&"data".to_string())
-                .as_str()
-            {
-                "nil" | "sensitive" => Ok(()),
-                "clear" => delete_latest(arg_matches),
-                _ => store(arg_matches),
+            match extract_required_arg_value(arg_matches, "clipboard-state")? {
+                ClipboardState::Nil | ClipboardState::Sensitive => Ok(()),
+                ClipboardState::Clear => delete_latest(arg_matches),
+                ClipboardState::Data | ClipboardState::Unknown => store(arg_matches),
             }
         }
         Some(("list", arg_matches)) => list(arg_matches),
@@ -83,29 +115,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn store(arg_matches: &ArgMatches) -> anyhow::Result<()> {
-    let storage_path = common::get_storage_path(arg_matches)?;
+    let storage_path: &PathBuf = common::extract_required_arg_value(arg_matches, "storage-path")?;
+    let size_limit: &usize = common::extract_required_arg_value(arg_matches, "byte-limit")?;
+    let dedupe_search_limit: &usize =
+        common::extract_required_arg_value(arg_matches, "dedupe-search-limit")?;
 
     fs::create_dir_all(storage_path)
         .map_err(|e| anyhow!("Failed to create clipboard directory: {}", e))?;
-
-    let size_limit: usize = arg_matches
-        .try_get_one::<String>("size-limit")
-        .map_err(|e| anyhow!("Failed to get value of argument 'size-limit': {}", e))?
-        .ok_or(anyhow!("size-limit is required"))?
-        .parse()
-        .map_err(|e| anyhow!("Failed to parse size-limit: {}", e))?;
-
-    let dedupe_search_limit: usize = arg_matches
-        .try_get_one::<String>("dedupe-search-limit")
-        .map_err(|e| {
-            anyhow!(
-                "Failed to get value of argument 'dedupe-search-limit': {}",
-                e
-            )
-        })?
-        .ok_or(anyhow!("dedupe-search-limit is required"))?
-        .parse()
-        .map_err(|e| anyhow!("Failed to parse dedupe-search-limit: {}", e))?;
 
     let mut buffer = Vec::new();
     io::stdin()
@@ -116,7 +132,7 @@ fn store(arg_matches: &ArgMatches) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if buffer.len() > size_limit {
+    if buffer.len() > *size_limit {
         return Err(anyhow!(
             "Clipboard entry size exceeds limit of {} bytes",
             size_limit
@@ -125,9 +141,10 @@ fn store(arg_matches: &ArgMatches) -> anyhow::Result<()> {
 
     let ext = common::get_ext(&buffer);
 
-    let filename = format!("{}/{}.{}", storage_path, Utc::now().timestamp_micros(), ext);
+    let filepath = storage_path.join(format!("{}.{}", Utc::now().timestamp_micros(), ext));
+
     let mut file =
-        File::create(&filename).map_err(|e| anyhow!("Failed to create clipboard file: {}", e))?;
+        File::create(&filepath).map_err(|e| anyhow!("Failed to create clipboard file: {}", e))?;
     file.write_all(&buffer)
         .map_err(|e| anyhow!("Failed to write to clipboard file: {}", e))?;
 
@@ -136,34 +153,30 @@ fn store(arg_matches: &ArgMatches) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn deduplicate_latest(storage_path: &str, buffer: &[u8], limit: usize) -> anyhow::Result<()> {
+fn deduplicate_latest(storage_path: &PathBuf, buffer: &[u8], limit: &usize) -> anyhow::Result<()> {
     let paths = common::get_clipboard_entries(storage_path)
         .map_err(|e| anyhow!("Failed to read clipboard directory: {}", e))?;
 
-    paths.iter().skip(1).take(limit).for_each(|path| {
-        let file = File::open(path)
-            .map_err(|e| anyhow!("Failed to open clipboard file: {}", e))
-            .unwrap();
+    for path in paths.iter().skip(1).take(*limit) {
+        let file = File::open(path).map_err(|e| anyhow!("Failed to open clipboard file: {}", e))?;
 
         let mut reader = BufReader::new(file);
         let mut other_buffer = Vec::new();
         reader
             .read_to_end(&mut other_buffer)
-            .map_err(|e| anyhow!("Failed to read clipboard file: {}", e))
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to read clipboard file: {}", e))?;
 
         if buffer == other_buffer.as_slice() {
             fs::remove_file(path)
-                .map_err(|e| anyhow!("Failed to delete duplicate clipboard file: {}", e))
-                .unwrap();
+                .map_err(|e| anyhow!("Failed to delete duplicate clipboard file: {}", e))?;
         }
-    });
+    }
 
     Ok(())
 }
 
 fn delete_latest(arg_matches: &ArgMatches) -> anyhow::Result<()> {
-    let storage_path = common::get_storage_path(arg_matches)?;
+    let storage_path: &PathBuf = common::extract_required_arg_value(arg_matches, "storage-path")?;
 
     let paths = common::get_clipboard_entries(storage_path)
         .map_err(|e| anyhow!("Failed to read clipboard directory: {}", e))?;
@@ -176,14 +189,8 @@ fn delete_latest(arg_matches: &ArgMatches) -> anyhow::Result<()> {
 }
 
 fn list(arg_matches: &ArgMatches) -> anyhow::Result<()> {
-    let storage_path = common::get_storage_path(arg_matches)?;
-
-    let preview_length: usize = arg_matches
-        .try_get_one::<String>("preview-length")
-        .map_err(|e| anyhow!("Failed to get value of argument 'preview-length': {}", e))?
-        .ok_or(anyhow!("preview-length is required"))?
-        .parse()
-        .map_err(|e| anyhow!("Failed to parse preview-length: {}", e))?;
+    let storage_path: &PathBuf = common::extract_required_arg_value(arg_matches, "storage-path")?;
+    let preview_length: &usize = common::extract_required_arg_value(arg_matches, "preview-length")?;
 
     let paths = common::get_clipboard_entries(storage_path)
         .map_err(|e| anyhow!("Failed to read clipboard directory: {}", e))?;
@@ -199,7 +206,7 @@ fn list(arg_matches: &ArgMatches) -> anyhow::Result<()> {
                 File::open(path).map_err(|e| anyhow!("Failed to open clipboard file: {}", e))?;
 
             let mut reader = BufReader::new(file);
-            let mut buffer = vec![0; preview_length];
+            let mut buffer = vec![0; *preview_length];
 
             let n = reader
                 .read(&mut buffer[..])
@@ -212,7 +219,10 @@ fn list(arg_matches: &ArgMatches) -> anyhow::Result<()> {
                 buffer.iter().map(|&b| b as char).collect()
             };
 
-            preview.trim_ascii().replace("\n", " ").to_string()
+            preview
+                .trim_ascii()
+                .replace(if cfg!(windows) { "\r\n" } else { "\n" }, " ")
+                .to_string()
         } else {
             let metadata = fs::metadata(path)
                 .map_err(|e| anyhow!("Failed to read clipboard file metadata: {}", e))?;
@@ -231,7 +241,7 @@ fn list(arg_matches: &ArgMatches) -> anyhow::Result<()> {
 }
 
 fn decode(arg_matches: &ArgMatches) -> anyhow::Result<()> {
-    let storage_path = common::get_storage_path(arg_matches)?;
+    let storage_path: &PathBuf = common::extract_required_arg_value(arg_matches, "storage-path")?;
 
     // stdin from dmenu will be prefixed with the id, so we only take the numeric part
     let id = io::stdin()

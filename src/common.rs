@@ -1,25 +1,27 @@
 use anyhow::anyhow;
-use clap::ArgMatches;
 use std::fs::{self};
 use std::io::{self};
 use std::path::PathBuf;
 use std::str;
 
-pub fn get_storage_path(arg_matches: &ArgMatches) -> Result<&String, anyhow::Error> {
+pub fn extract_required_arg_value<'a, T: Clone + Send + Sync + 'static>(
+    arg_matches: &'a clap::ArgMatches,
+    name: &'a str,
+) -> Result<&'a T, anyhow::Error> {
     arg_matches
-        .try_get_one("storage-path")
-        .map_err(|e| anyhow!("Failed to get value of argument 'storage-path': {}", e))?
-        .ok_or(anyhow!("storage-path is required"))
+        .try_get_one(name)
+        .map_err(|e| anyhow!("Failed to get value of argument '{}': {}", name, e))?
+        .ok_or(anyhow!("{} is required", name))
 }
 
-pub fn get_clipboard_entries(dir: &str) -> Result<Vec<PathBuf>, io::Error> {
+pub fn get_clipboard_entries(dir: &PathBuf) -> Result<Vec<PathBuf>, io::Error> {
     let mut entries = fs::read_dir(dir)?
         .map(|res| res.map(|e| e.path()))
         .filter(|res| match res {
             Ok(path) => path.is_file(),
             Err(_) => false,
         })
-        .collect::<Result<Vec<_>, io::Error>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Since the order of read_dir is is platform and filesystem dependent we sort the entries by name DESC
     entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
@@ -65,9 +67,9 @@ pub fn home_dir() -> PathBuf {
     PathBuf::from(home)
 }
 
-pub fn data_dir() -> PathBuf {
+pub fn data_dir(app_name: &str) -> PathBuf {
     let data_dir = std::env::var("XDG_DATA_HOME")
         .map_or_else(|_| home_dir().join(".local").join("share"), PathBuf::from);
 
-    data_dir.join("clipdir")
+    data_dir.join(app_name)
 }
