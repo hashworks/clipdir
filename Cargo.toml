@@ -1,6 +1,6 @@
 [package]
 name = "clipdir"
-description = "Clipboard manager with directory backend"
+description = "wayland clipboard manager with a syncable directory backend "
 version = "0.1.0"
 edition = "2021"
 
