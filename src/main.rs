@@ -100,13 +100,11 @@ fn main() -> anyhow::Result<()> {
         .get_matches();
 
     match matches.subcommand() {
-        Some(("store", arg_matches)) => {
-            match extract_required_arg_value(arg_matches, "clipboard-state")? {
-                ClipboardState::Nil | ClipboardState::Sensitive => Ok(()),
-                ClipboardState::Clear => delete_latest(arg_matches),
-                ClipboardState::Data | ClipboardState::Unknown => store(arg_matches),
-            }
-        }
+        Some(("store", arg_matches)) => match extract_required_arg_value(arg_matches, "state")? {
+            ClipboardState::Nil | ClipboardState::Sensitive => Ok(()),
+            ClipboardState::Clear => delete_latest(arg_matches),
+            ClipboardState::Data | ClipboardState::Unknown => store(arg_matches),
+        },
         Some(("list", arg_matches)) => list(arg_matches),
         Some(("decode", arg_matches)) => decode(arg_matches),
 
