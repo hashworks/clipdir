@@ -1,8 +1,15 @@
 [package]
 name = "clipdir"
-description = "wayland clipboard manager with a syncable directory backend "
+description = "wayland clipboard manager with a syncable directory backend"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["Justin Kromlinger <mail@hashworks.net>"]
+homepage = "https://github.com/hashworks/clipdir"
+repository = "https://github.com/hashworks/clipdir"
+readme = "README.md"
+categories = ["command-line-utilities"]
+keywords = ["clipboard", "manager", "wayland", "sync", "directory"]
 
 [dependencies]
 anyhow = "1.0.95"
